@@ -1,10 +1,11 @@
 import React, { useCallback, useState } from 'react';
 import { Dropdown, InlineLoading, InlineNotification } from '@carbon/react';
 import { useTranslation } from 'react-i18next';
-import { showSnackbar, getCoreTranslation } from '@openmrs/esm-framework';
+import { showSnackbar, getCoreTranslation, openmrsFetch } from '@openmrs/esm-framework';
 import { useCashPoint, useBillableItems, createPatientBill } from './billing-form.resource';
 import VisitAttributesForm from './visit-attributes/visit-attributes-form.component';
 import styles from './billing-checkin-form.scss';
+import useSWR from 'swr';
 
 const PENDING_PAYMENT_STATUS = 'PENDING';
 
@@ -15,6 +16,22 @@ type BillingCheckInFormProps = {
 
 const BillingCheckInForm: React.FC<BillingCheckInFormProps> = ({ patientUuid, setExtraVisitInfo }) => {
   const { t } = useTranslation();
+
+  const { data: visitData } = useSWR(`/ws/fhir2/R4/Encounter?patient=${patientUuid}&_sort=-date&_count=1`, (url) =>
+    openmrsFetch(url).then((res) => res.json()),
+  );
+
+  const isWaived = React.useMemo(() => {
+    if (!visitData?.entry?.length) return false;
+
+    const lastVisitDate = new Date(visitData.entry[0].resource.period.start);
+    const today = new Date();
+    const diffTime = Math.abs(today.getTime() - lastVisitDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    return diffDays <= 7;
+  }, [visitData]);
+
   const { cashPoints, isLoading: isLoadingCashPoints, error: cashError } = useCashPoint();
   const { lineItems, isLoading: isLoadingLineItems, error: lineError } = useBillableItems();
   const [attributes, setAttributes] = useState([]);
@@ -54,7 +71,8 @@ const BillingCheckInForm: React.FC<BillingCheckInFormProps> = ({ patientUuid, se
         {
           billableService: itemUuid,
           quantity: 1,
-          price: priceForPaymentMode ? priceForPaymentMode.price : '0.000',
+          // force price to 0 if waived
+          price: isWaived ? '0.000' : priceForPaymentMode ? priceForPaymentMode.price : '0.00',
           priceName: 'Default',
           priceUuid: priceForPaymentMode ? priceForPaymentMode.uuid : '',
           lineItemOrder: 0,
@@ -110,6 +128,18 @@ const BillingCheckInForm: React.FC<BillingCheckInFormProps> = ({ patientUuid, se
   return (
     <section className={styles.sectionContainer}>
       <VisitAttributesForm setAttributes={setAttributes} setPaymentMethod={setPaymentMethod} />
+
+      {isWaived && (
+        <div style={{ marginBottom: '1rem' }}>
+          <InlineNotification
+            kind="info"
+            title={t('feeWaived', 'Consultation Fee Waived')}
+            subtitle={t('returnVisitMsg', 'Patient detected with visit within 7 days. Consultation is free.')}
+            lowContrast
+          />
+        </div>
+      )}
+
       {
         <Dropdown
           id="billable-items"
